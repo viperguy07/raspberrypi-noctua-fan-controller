@@ -12,15 +12,10 @@ logging.basicConfig(level=logging.ERROR)
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-# Get the API token from the environment variable
-token = os.getenv('INFLUXDB_TOKEN')
-if not token:
-    raise ValueError("InfluxDB API token not found in environment variables.")
-
 # Connect to InfluxDB 2.x with API token from environment
 client = InfluxDBClient(
     url=config['INFLUXDB']['url'],
-    token=token,
+    token=config['INFLUXDB']['token'],
     org=config['INFLUXDB']['org']
 )
 
