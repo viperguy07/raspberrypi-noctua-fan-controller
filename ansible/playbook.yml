@@ -1,0 +1,230 @@
+---
+- name: Deploy Fan Controller, InfluxDB, and Grafana on Raspberry Pi
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    project_dir: "{{ lookup('env', 'HOME') }}/raspberrypi-noctua-fan-controller"
+    venv_dir: "{{ project_dir }}/env"
+    influxdb_url: "http://localhost:8086"
+    influxdb_org: "raspi"
+    influxdb_bucket: "fan_control"
+    influxdb_admin_user: "pi"
+    influxdb_admin_password: "raspberry"
+    grafana_admin_user: "admin"
+    grafana_admin_password: "admin"
+    grafana_datasource_name: "InfluxDB"
+    grafana_dashboard_name: "Fan Metrics Dashboard"
+
+  tasks:
+    - name: Install necessary packages
+      apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+          - git
+          - docker.io
+          - docker-compose
+        state: present
+        update_cache: yes
+
+    - name: Clone the repository
+      git:
+        repo: 'https://github.com/viperguy07/raspberrypi-noctua-fan-controller.git'
+        dest: "{{ project_dir }}"
+        update: yes
+
+    - name: Create Python virtual environment
+      command: python3 -m venv {{ venv_dir }}
+      args:
+        chdir: "{{ project_dir }}"
+      when: not ansible_virtualenv
+
+    - name: Install Python dependencies
+      pip:
+        requirements: "{{ project_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+      environment:
+        PATH: "{{ venv_dir }}/bin:{{ ansible_env.PATH }}"
+
+    - name: Deploy InfluxDB Docker container
+      docker_container:
+        name: influxdb2
+        image: influxdb:2.7
+        ports:
+          - "8086:8086"
+        volumes:
+          - "influxdb2-data:/var/lib/influxdb2"
+          - "influxdb2-config:/etc/influxdb2"
+        env:
+          DOCKER_INFLUXDB_INIT_MODE: "setup"
+          DOCKER_INFLUXDB_INIT_USERNAME: "{{ influxdb_admin_user }}"
+          DOCKER_INFLUXDB_INIT_PASSWORD: "{{ influxdb_admin_password }}"
+          DOCKER_INFLUXDB_INIT_ORG: "{{ influxdb_org }}"
+          DOCKER_INFLUXDB_INIT_BUCKET: "{{ influxdb_bucket }}"
+        state: started
+        restart_policy: always
+
+    - name: Wait for InfluxDB to be ready
+      uri:
+        url: "{{ influxdb_url }}/health"
+        method: GET
+        return_content: yes
+      register: influxdb_health
+      until: "'passing' in influxdb_health.content"
+      retries: 10
+      delay: 10
+
+    - name: Retrieve Operator token from InfluxDB config file
+      slurp:
+        src: /etc/influxdb2/influx-configs
+      register: influxdb_config_file
+
+    - name: Extract Operator token from InfluxDB config
+      set_fact:
+        operator_token: "{{ (influxdb_config_file.content | b64decode).split('\n') | select('search', 'operator-token') | first | regex_search('operator-token=(.*)', '\\1') }}"
+
+    - name: Create an All Access API token
+      uri:
+        url: "{{ influxdb_url }}/api/v2/authorizations"
+        method: POST
+        headers:
+          Authorization: "Token {{ operator_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          org: "{{ influxdb_org }}"
+          description: "All Access Token for Fan Controller"
+          permissions:
+            - action: read
+              resource:
+                type: buckets
+            - action: write
+              resource:
+                type: buckets
+            - action: read
+              resource:
+                type: dashboards
+            - action: write
+              resource:
+                type: dashboards
+            - action: read
+              resource:
+                type: tasks
+            - action: write
+              resource:
+                type: tasks
+        status_code: 201
+        register: all_access_token
+
+    - name: Update config.ini with All Access API token
+      ini_file:
+        path: "{{ project_dir }}/config.ini"
+        section: INFLUXDB
+        option: token
+        value: "{{ all_access_token.json.token }}"
+
+    - name: Deploy and start Grafana Docker container
+      docker_container:
+        name: grafana
+        image: grafana/grafana:latest
+        ports:
+          - "3000:3000"
+        env:
+          GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"
+          GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+        state: started
+        restart_policy: always
+
+    - name: Wait for Grafana to be ready
+      uri:
+        url: "http://localhost:3000/api/health"
+        method: GET
+        return_content: yes
+      register: grafana_health
+      until: "'ok' in grafana_health.content"
+      retries: 10
+      delay: 10
+
+    - name: Add InfluxDB datasource to Grafana
+      uri:
+        url: "http://localhost:3000/api/datasources"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Basic {{ grafana_admin_user | b64encode }}:{{ grafana_admin_password | b64encode }}"
+        body_format: json
+        body:
+          name: "{{ grafana_datasource_name }}"
+          type: "influxdb"
+          access: "proxy"
+          url: "{{ influxdb_url }}"
+          basicAuth: false
+          database: "{{ influxdb_bucket }}"
+          user: "{{ influxdb_admin_user }}"
+          password: "{{ influxdb_admin_password }}"
+          jsonData:
+            defaultBucket: "{{ influxdb_bucket }}"
+            organization: "{{ influxdb_org }}"
+            token: "{{ all_access_token.json.token }}"
+        status_code: 200
+
+    - name: Create Grafana dashboard
+      uri:
+        url: "http://localhost:3000/api/dashboards/db"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Basic {{ grafana_admin_user | b64encode }}:{{ grafana_admin_password | b64encode }}"
+        body_format: json
+        body:
+          dashboard:
+            title: "{{ grafana_dashboard_name }}"
+            panels:
+              - title: "RPM"
+                type: "gauge"
+                datasource: "{{ grafana_datasource_name }}"
+                fieldConfig:
+                  defaults:
+                    min: 0
+                    max: 5000
+                targets:
+                  - query: "from(bucket: \"{{ influxdb_bucket }}\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"fan_metrics\" and r._field == \"rpm\")"
+              - title: "Duty Cycle"
+                type: "gauge"
+                datasource: "{{ grafana_datasource_name }}"
+                fieldConfig:
+                  defaults:
+                    min: 0
+                    max: 255
+                targets:
+                  - query: "from(bucket: \"{{ influxdb_bucket }}\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"fan_metrics\" and r._field == \"duty_cycle\")"
+              - title: "Temperature"
+                type: "gauge"
+                datasource: "{{ grafana_datasource_name }}"
+                fieldConfig:
+                  defaults:
+                    min: 0
+                    max: 100
+                targets:
+                  - query: "from(bucket: \"{{ influxdb_bucket }}\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"fan_metrics\" and r._field == \"temperature\")"
+          overwrite: true
+        status_code: 200
+
+    - name: Deploy and start the fan controller script as a service
+      template:
+        src: fan_controller.service.j2
+        dest: /etc/systemd/system/fan_controller.service
+
+    - name: Reload systemd to recognize the new service
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start the fan controller service
+      systemd:
+        name: fan_controller
+        enabled: yes
+        state: started
