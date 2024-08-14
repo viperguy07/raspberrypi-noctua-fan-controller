@@ -1,0 +1,14 @@
+[Unit]
+Description=Fan Controller Service
+After=network.target
+
+[Service]
+ExecStart={{ project_dir }}/env/bin/python {{ project_dir }}/fan_controller.py
+WorkingDirectory={{ project_dir }}
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target

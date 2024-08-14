@@ -1,0 +1,3 @@
+pigpio
+influxdb-client
+configparser
