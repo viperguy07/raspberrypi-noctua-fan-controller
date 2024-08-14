@@ -41,7 +41,7 @@
       command: python3 -m venv {{ venv_dir }}
       args:
         chdir: "{{ project_dir }}"
-      when: not ansible_virtualenv
+      when: ansible_env.PATH is not search('env/bin')
 
     - name: Install Python dependencies
       pip:

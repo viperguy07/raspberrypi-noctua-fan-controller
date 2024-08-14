@@ -14,7 +14,12 @@ if ! [ -x "$(command -v docker-compose)" ]; then
 fi
 
 # Clone the repository
-git clone https://github.com/viperguy07/raspberrypi-noctua-fan-controller.git
+if [ ! -d "raspberrypi-noctua-fan-controller" ]; then
+  git clone https://github.com/viperguy07/raspberrypi-noctua-fan-controller.git
+else
+  echo "Repository already exists. Skipping clone."
+fi
+
 cd raspberrypi-noctua-fan-controller
 
 # Set up the Python environment
@@ -23,7 +28,11 @@ source env/bin/activate
 pip install -r requirements.txt
 
 # Deploy InfluxDB and Grafana using Docker Compose
-docker-compose up -d
+if ! docker ps | grep -q influxdb; then
+  docker-compose up -d
+else
+  echo "Docker containers already running. Skipping Docker Compose."
+fi
 
 # Run the fan controller script
 python fan_controller.py
