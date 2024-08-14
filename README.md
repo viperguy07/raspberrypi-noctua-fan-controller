@@ -21,7 +21,7 @@ This project sets up a fan controller for a Raspberry Pi using a Noctua PWM fan.
 ### Quick Install
 Run the following command to install everything:
 ```bash
-curl  -sSL  https://raw.githubusercontent.com/viperguy07/raspberrypi-noctua-fan-controller/main/install.sh | bash
+curl  -sSL  https://raw.githubusercontent.com/viperguy07/raspberrypi-noctua-fan-controller/master/install.sh | bash
 ```
 ### Manual  Install
 1. Clone  the  repository:
